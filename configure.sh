@@ -7,19 +7,19 @@ VNC_USER_PW="${VNC_USER_PASSWORD:-${1:-}}"
 VNC_PASS="${VNC_PASSWORD:-${2:-}}"
 NGROK_AUTH_TOKEN_VAL="${NGROK_AUTH_TOKEN:-${3:-}}"
 
+# ========= デバッグ出力（長さのみ表示） =========
+echo "[DEBUG] VNC_USER_PASSWORD length: ${#VNC_USER_PW}"
+echo "[DEBUG] VNC_PASSWORD length: ${#VNC_PASS}"
+echo "[DEBUG] NGROK_AUTH_TOKEN length: ${#NGROK_AUTH_TOKEN_VAL}"
+
 # ========= バリデーション =========
-if [[ -z "${VNC_USER_PW}" ]]; then
-  echo "[ERROR] VNC_USER_PASSWORD が空です（Secrets か引数で与えてください）" >&2
+if [[ -z "${VNC_USER_PW}" || -z "${VNC_PASS}" || -z "${NGROK_AUTH_TOKEN_VAL}" ]]; then
+  echo "[ERROR] 必須の値が空です" >&2
   exit 1
 fi
-if [[ -z "${VNC_PASS}" ]]; then
-  echo "[ERROR] VNC_PASSWORD が空です（Secrets か引数で与えてください）" >&2
-  exit 1
-fi
-if [[ -z "${NGROK_AUTH_TOKEN_VAL}" ]]; then
-  echo "[ERROR] NGROK_AUTH_TOKEN が空です（Secrets か引数で与えてください）" >&2
-  exit 1
-fi
+
+# …この後は既存処理を続行…
+
 
 # ========= Spotlight 無効化 =========
 sudo mdutil -i off -a || true
