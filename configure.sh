@@ -1,33 +1,52 @@
-#configure.sh VNC_USER_PASSWORD VNC_PASSWORD NGROK_AUTH_TOKEN
+#!/usr/bin/env bash
+set -euo pipefail
 
-#disable spotlight indexing
+# ========= 設定 =========
+VNC_USER="vncuser"
+VNC_USER_PW="${VNC_USER_PASSWORD:-$1}"
+VNC_PASS="${VNC_PASSWORD:-$2}"
+NGROK_AUTH_TOKEN_VAL="${NGROK_AUTH_TOKEN:-$3}"
+
+# ========= Spotlight 無効化 =========
 sudo mdutil -i off -a
 
-#Create new account
-sudo dscl . -create /Users/vncuser
-sudo dscl . -create /Users/vncuser UserShell /bin/bash
-sudo dscl . -create /Users/vncuser RealName "VNC User"
-sudo dscl . -create /Users/vncuser UniqueID 1001
-sudo dscl . -create /Users/vncuser PrimaryGroupID 80
-sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
-sudo dscl . -passwd /Users/vncuser $1
-sudo dscl . -passwd /Users/vncuser $1
-sudo createhomedir -c -u vncuser > /dev/null
+# ========= ユーザー作成（Secure Token 付与） =========
+sudo sysadminctl -addUser "${VNC_USER}" -password "${VNC_USER_PW}" -admin || true
+sudo sysadminctl -resetPasswordFor "${VNC_USER}" -newPassword "${VNC_USER_PW}" || true
+sudo sysadminctl -secureTokenStatus "${VNC_USER}" || true
 
-#Enable VNC
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -allUsers -privs -all
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -clientopts -setvnclegacy -vnclegacy yes 
+# ========= VNC 有効化 =========
+KICK="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
+sudo "$KICK" -configure -allowAccessFor -allUsers -privs -all
+sudo "$KICK" -configure -clientopts -setvnclegacy -vnclegacy yes
 
-#VNC password - http://hints.macworld.com/article.php?story=20071103011608872
-echo $2 | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA"}; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt
+# ========= VNC パスワード設定 =========
+echo "${VNC_PASS}" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA"}; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' \
+| sudo tee /Library/Preferences/com.apple.VNCSettings.txt
 
-#Start VNC/reset changes
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent -console
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate
+# ========= VNC 再起動 =========
+sudo "$KICK" -restart -agent -console
+sudo "$KICK" -activate
 
-#install ngrok
-brew cask install ngrok
+# ========= TCC 権限リセット（黒画面・許可ダイアログ抑止） =========
+sudo tccutil reset ScreenCapture || true
+sudo tccutil reset SystemPolicyNetworkVolumes || true
 
-#configure ngrok and start it
-ngrok authtoken $3
+# ========= ngrok インストール =========
+if ! command -v ngrok >/dev/null 2>&1; then
+  brew install --cask ngrok || brew install ngrok/ngrok/ngrok
+fi
+
+# ========= ngrok 起動 =========
+ngrok authtoken "${NGROK_AUTH_TOKEN_VAL}"
 ngrok tcp 5900 &
+
+# ========= 接続情報表示 =========
+sleep 3
+if command -v curl >/dev/null 2>&1; then
+  echo "===== ngrok TCP endpoint ====="
+  curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*' | sed 's/"public_url":"//'
+fi
+
+echo "==============================="
+echo "VNC 接続ユーザー名: ${VNC_USER}"
