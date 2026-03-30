@@ -7,7 +7,7 @@ defaults:
 
 jobs:
   build:
-    runs-on: macos-15-xlarge
+    runs-on: macos-latest
     steps:
     - uses: actions/checkout@v2
     - name: Setting the environment up.
