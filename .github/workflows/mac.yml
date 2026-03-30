@@ -3,6 +3,9 @@ name: mac
 on:
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 defaults:
   run:
     shell: bash
@@ -12,18 +15,21 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
       - name: Setting the environment up
         env:
           VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
+          set -euo pipefail
           chmod +x configure.sh
           source configure.sh "$VNC_USER_PASSWORD" "$VNC_PASSWORD"
 
       - name: Install cloudflared
         run: |
+          set -euo pipefail
           brew update
           brew install cloudflared
 
@@ -31,37 +37,37 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Eğer configure.sh noVNC/web arayüzünü 6080'de açıyorsa bunu yayınlar.
-          # Port farklıysa aşağıyı değiştir.
+          # noVNC veya web arayüzünün dinlediği port
           TARGET_URL="http://127.0.0.1:6080"
 
-          # Quick Tunnel bazen ~/.cloudflared/config.yml varsa çalışmaz.
+          # Varsa eski config'i geçici olarak kenara al
           if [ -f "$HOME/.cloudflared/config.yml" ]; then
             mv "$HOME/.cloudflared/config.yml" "$HOME/.cloudflared/config.yml.bak"
           fi
 
           LOG_FILE="$(mktemp)"
 
-          cloudflared tunnel --url "$TARGET_URL" 2>&1 | tee "$LOG_FILE" &
+          cloudflared tunnel --url "$TARGET_URL" --no-autoupdate 2>&1 | tee "$LOG_FILE" &
           CF_PID=$!
 
+          TUNNEL_URL=""
           for i in {1..60}; do
             TUNNEL_URL="$(grep -Eo 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' "$LOG_FILE" | head -n1 || true)"
-            if [ -n "${TUNNEL_URL}" ]; then
-              echo ""
-              echo "Cloudflare Tunnel URL:"
-              echo "$TUNNEL_URL"
-              echo ""
+            if [ -n "$TUNNEL_URL" ]; then
               break
             fi
             sleep 2
           done
 
-          if [ -z "${TUNNEL_URL:-}" ]; then
+          if [ -z "$TUNNEL_URL" ]; then
             echo "Tunnel URL alınamadı. cloudflared logu:"
             cat "$LOG_FILE"
             exit 1
           fi
 
-          # Job hemen bitmesin; tunnel açık kalsın
+          echo ""
+          echo "Cloudflare Tunnel URL:"
+          echo "$TUNNEL_URL"
+          echo ""
+
           wait "$CF_PID"
