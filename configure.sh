@@ -1,33 +1,77 @@
-#configure.sh VNC_USER_PASSWORD VNC_PASSWORD NGROK_AUTH_TOKEN
+name: mac
 
-#disable spotlight indexing
-sudo mdutil -i off -a
+on:
+  workflow_dispatch:
 
-#Create new account
-sudo dscl . -create /Users/vncuser
-sudo dscl . -create /Users/vncuser UserShell /bin/bash
-sudo dscl . -create /Users/vncuser RealName "VNC User"
-sudo dscl . -create /Users/vncuser UniqueID 1001
-sudo dscl . -create /Users/vncuser PrimaryGroupID 80
-sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
-sudo dscl . -passwd /Users/vncuser $1
-sudo dscl . -passwd /Users/vncuser $1
-sudo createhomedir -c -u vncuser > /dev/null
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-#Enable VNC
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -allUsers -privs -all
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -clientopts -setvnclegacy -vnclegacy yes 
+defaults:
+  run:
+    shell: bash
 
-#VNC password - http://hints.macworld.com/article.php?story=20071103011608872
-echo $2 | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA"}; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 360
 
-#Start VNC/reset changes
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent -console
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
-#install ngrok
-brew cask install ngrok
+      - name: Set up VNC + noVNC
+        env:
+          VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          chmod +x ./configure.sh
+          bash ./configure.sh "$VNC_USER_PASSWORD" "$VNC_PASSWORD"
 
-#configure ngrok and start it
-ngrok authtoken $3
-ngrok tcp 5900 &
+      - name: Install cloudflared
+        run: |
+          set -euo pipefail
+          brew update
+          brew install cloudflared
+
+      - name: Start Cloudflare Quick Tunnel and print URL
+        run: |
+          set -euo pipefail
+
+          TARGET_URL="http://127.0.0.1:6080"
+
+          if [ -f "$HOME/.cloudflared/config.yml" ]; then
+            mv "$HOME/.cloudflared/config.yml" "$HOME/.cloudflared/config.yml.bak"
+          fi
+
+          LOG_FILE="$(mktemp)"
+
+          cloudflared tunnel --url "$TARGET_URL" --no-autoupdate 2>&1 | tee "$LOG_FILE" &
+          CF_PID=$!
+
+          TUNNEL_URL=""
+          for i in {1..90}; do
+            TUNNEL_URL="$(grep -Eo 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' "$LOG_FILE" | head -n1 || true)"
+            if [ -n "$TUNNEL_URL" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "Tunnel URL alınamadı. cloudflared logu:"
+            cat "$LOG_FILE"
+            exit 1
+          fi
+
+          echo ""
+          echo "=============================="
+          echo " Cloudflare Tunnel URL"
+          echo " $TUNNEL_URL"
+          echo "=============================="
+          echo ""
+          echo "noVNC adresi:"
+          echo "$TUNNEL_URL/vnc.html"
+          echo ""
+
+          wait "$CF_PID"
