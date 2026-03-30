@@ -1,77 +1,88 @@
-name: mac
+#!/usr/bin/env bash
+set -euo pipefail
 
-on:
-  workflow_dispatch:
+# Usage:
+# ./configure.sh VNC_USER_PASSWORD VNC_PASSWORD
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+VNC_USER_PASSWORD="${1:?missing VNC user password}"
+VNC_PASSWORD="${2:?missing VNC password}"
 
-defaults:
-  run:
-    shell: bash
+# Disable Spotlight indexing
+sudo mdutil -i off -a || true
 
-jobs:
-  build:
-    runs-on: macos-latest
-    timeout-minutes: 360
+# Create user if it does not exist
+if ! id -u vncuser >/dev/null 2>&1; then
+  sudo dscl . -create /Users/vncuser
+  sudo dscl . -create /Users/vncuser UserShell /bin/bash
+  sudo dscl . -create /Users/vncuser RealName "VNC User"
+  sudo dscl . -create /Users/vncuser UniqueID 1001
+  sudo dscl . -create /Users/vncuser PrimaryGroupID 80
+  sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
+  sudo dscl . -passwd /Users/vncuser "$VNC_USER_PASSWORD"
+  sudo createhomedir -c -u vncuser >/dev/null
+else
+  sudo dscl . -passwd /Users/vncuser "$VNC_USER_PASSWORD"
+fi
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+# Enable VNC / Apple Remote Desktop
+sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+  -configure -allowAccessFor -allUsers -privs -all
 
-      - name: Set up VNC + noVNC
-        env:
-          VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
-          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
-        run: |
-          set -euo pipefail
-          chmod +x ./configure.sh
-          bash ./configure.sh "$VNC_USER_PASSWORD" "$VNC_PASSWORD"
+sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+  -configure -clientopts -setvnclegacy -vnclegacy yes
 
-      - name: Install cloudflared
-        run: |
-          set -euo pipefail
-          brew update
-          brew install cloudflared
+# Set legacy VNC password (max 8 chars, Apple legacy format)
+printf '%s\n' "$VNC_PASSWORD" \
+| perl -we '
+BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }
+$_ = <>;
+chomp;
+s/^(.{8}).*/$1/;
+@p = unpack "C*", $_;
+foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }
+print "\n";
+' \
+| sudo tee /Library/Preferences/com.apple.VNCSettings.txt >/dev/null
 
-      - name: Start Cloudflare Quick Tunnel and print URL
-        run: |
-          set -euo pipefail
+# Restart / activate ARD agent
+sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+  -restart -agent -console
 
-          TARGET_URL="http://127.0.0.1:6080"
+sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+  -activate
 
-          if [ -f "$HOME/.cloudflared/config.yml" ]; then
-            mv "$HOME/.cloudflared/config.yml" "$HOME/.cloudflared/config.yml.bak"
-          fi
+# Install noVNC + websockify so Cloudflare can publish an HTTP URL
+brew update
+brew install python3 novnc websockify
 
-          LOG_FILE="$(mktemp)"
+# Prepare logs
+mkdir -p "$HOME/novnc-logs"
 
-          cloudflared tunnel --url "$TARGET_URL" --no-autoupdate 2>&1 | tee "$LOG_FILE" &
-          CF_PID=$!
+# Kill old listeners if rerun
+pkill -f "websockify.*5900" || true
+pkill -f "novnc_proxy" || true
 
-          TUNNEL_URL=""
-          for i in {1..90}; do
-            TUNNEL_URL="$(grep -Eo 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' "$LOG_FILE" | head -n1 || true)"
-            if [ -n "$TUNNEL_URL" ]; then
-              break
-            fi
-            sleep 2
-          done
+# Start websockify/noVNC bridge
+# noVNC serves web UI on 6080 and proxies websocket traffic to local VNC 5900.
+nohup /opt/homebrew/bin/novnc_proxy --vnc 127.0.0.1:5900 --listen 6080 \
+  > "$HOME/novnc-logs/novnc.log" 2>&1 &
 
-          if [ -z "$TUNNEL_URL" ]; then
-            echo "Tunnel URL alınamadı. cloudflared logu:"
-            cat "$LOG_FILE"
-            exit 1
-          fi
+# Fallback path for Intel runners just in case
+if ! lsof -iTCP:6080 -sTCP:LISTEN >/dev/null 2>&1; then
+  nohup /usr/local/bin/novnc_proxy --vnc 127.0.0.1:5900 --listen 6080 \
+    > "$HOME/novnc-logs/novnc.log" 2>&1 &
+fi
 
-          echo ""
-          echo "=============================="
-          echo " Cloudflare Tunnel URL"
-          echo " $TUNNEL_URL"
-          echo "=============================="
-          echo ""
-          echo "noVNC adresi:"
-          echo "$TUNNEL_URL/vnc.html"
-          echo ""
+# Wait for noVNC web UI
+for i in {1..60}; do
+  if curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null 2>&1; then
+    echo "noVNC is listening on http://127.0.0.1:6080/vnc.html"
+    exit 0
+  fi
+  sleep 2
+done
 
-          wait "$CF_PID"
+echo "noVNC failed to start"
+echo "==== noVNC log ===="
+cat "$HOME/novnc-logs/novnc.log" || true
+exit 1
