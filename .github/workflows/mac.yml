@@ -13,19 +13,20 @@ defaults:
 jobs:
   build:
     runs-on: macos-latest
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Setting the environment up
+      - name: Set up VNC + noVNC
         env:
           VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
           set -euo pipefail
-          chmod +x configure.sh
-          source configure.sh "$VNC_USER_PASSWORD" "$VNC_PASSWORD"
+          chmod +x ./configure.sh
+          bash ./configure.sh "$VNC_USER_PASSWORD" "$VNC_PASSWORD"
 
       - name: Install cloudflared
         run: |
@@ -37,10 +38,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # noVNC veya web arayüzünün dinlediği port
           TARGET_URL="http://127.0.0.1:6080"
 
-          # Varsa eski config'i geçici olarak kenara al
           if [ -f "$HOME/.cloudflared/config.yml" ]; then
             mv "$HOME/.cloudflared/config.yml" "$HOME/.cloudflared/config.yml.bak"
           fi
@@ -51,7 +50,7 @@ jobs:
           CF_PID=$!
 
           TUNNEL_URL=""
-          for i in {1..60}; do
+          for i in {1..90}; do
             TUNNEL_URL="$(grep -Eo 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' "$LOG_FILE" | head -n1 || true)"
             if [ -n "$TUNNEL_URL" ]; then
               break
@@ -66,8 +65,13 @@ jobs:
           fi
 
           echo ""
-          echo "Cloudflare Tunnel URL:"
-          echo "$TUNNEL_URL"
+          echo "=============================="
+          echo " Cloudflare Tunnel URL"
+          echo " $TUNNEL_URL"
+          echo "=============================="
+          echo ""
+          echo "noVNC adresi:"
+          echo "$TUNNEL_URL/vnc.html"
           echo ""
 
           wait "$CF_PID"
